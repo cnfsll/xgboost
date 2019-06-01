@@ -19,7 +19,7 @@ package ml.dmlc.xgboost4j.scala.spark
 import scala.collection.{AbstractIterator, Iterator, mutable}
 import scala.collection.JavaConverters._
 
-import ml.dmlc.xgboost4j.java.{Rabit, XGBoost => JXGBoost}
+import ml.dmlc.xgboost4j.java.{Rabit, DMatrix => JDMatrix}
 import ml.dmlc.xgboost4j.{LabeledPoint => XGBLabeledPoint}
 import ml.dmlc.xgboost4j.scala.spark.params.{DefaultXGBoostParamsReader, _}
 import ml.dmlc.xgboost4j.scala.{Booster, DMatrix, XGBoost => SXGBoost}
@@ -195,6 +195,20 @@ class XGBoostRegressor (
     model
   }
 
+  def trainForLabeledPoint(trainingData: RDD[XGBLabeledPoint],
+                           evalData: Map[String, RDD[XGBLabeledPoint]] = Map(),
+                           hasGroup: Boolean = false):
+  XGBoostRegressionModel = {
+    val derivedXGBParamMap = MLlib2XGBoostParams
+    // All non-null param maps in XGBoostRegressor are in derivedXGBParamMap.
+    val (_booster, _metrics) = XGBoost.trainDistributed(trainingData, derivedXGBParamMap,
+      hasGroup, evalData)
+    val model = new XGBoostRegressionModel(uid, _booster)
+    val summary = XGBoostTrainingSummary(_metrics)
+    model.setSummary(summary)
+    model
+  }
+
   override def copy(extra: ParamMap): XGBoostRegressor = defaultCopy(extra)
 }
 
@@ -252,6 +266,28 @@ class XGBoostRegressionModel private[ml] (
     import DataUtils._
     val dm = new DMatrix(XGBoost.processMissingValues(Iterator(features.asXGB), $(missing)))
     _booster.predict(data = dm)(0)(0)
+  }
+
+  /**
+    * Predict score result with the given test set (represented as RDD).
+    *
+    * @param testSet test set represented as RDD
+    */
+  def predict(testSet: RDD[XGBLabeledPoint]): RDD[Float] = {
+    val broadcastBooster = testSet.sparkContext.broadcast(_booster)
+    testSet.mapPartitions { sampleIterator =>
+      if (sampleIterator.hasNext) {
+        val rabitEnv = Array("DMLC_TASK_ID" -> TaskContext.getPartitionId().toString).toMap
+        Rabit.init(rabitEnv.asJava)
+        val dMatrix = new DMatrix(new JDMatrix(sampleIterator.asJava, null))
+        val res = broadcastBooster.value.predict(dMatrix)
+        require(res(0).length == 1, "The prediction score of xgboost should be scalar")
+        Rabit.shutdown()
+        res.map { arr => arr(0) }.iterator
+      } else {
+        Iterator()
+      }
+    }
   }
 
   private def transformInternal(dataset: Dataset[_]): DataFrame = {
@@ -413,6 +449,16 @@ class XGBoostRegressionModel private[ml] (
 
   override def write: MLWriter =
     new XGBoostRegressionModel.XGBoostRegressionModelWriter(this)
+
+  override def save(path: String): Unit = {
+    val Writer = new XGBoostRegressionModel.XGBoostRegressionModelWriter(this)
+    Writer.saveModelAsHadoopFile(path)
+  }
+
+  def dump(path: String): Unit = {
+    val Writer = new XGBoostRegressionModel.XGBoostRegressionModelWriter(this)
+    Writer.dumpModelAsHadoopFile(path)
+  }
 }
 
 object XGBoostRegressionModel extends MLReadable[XGBoostRegressionModel] {
@@ -436,6 +482,30 @@ object XGBoostRegressionModel extends MLReadable[XGBoostRegressionModel] {
       val internalPath = new Path(dataPath, "XGBoostRegressionModel")
       val outputStream = internalPath.getFileSystem(sc.hadoopConfiguration).create(internalPath)
       instance._booster.saveModel(outputStream)
+      outputStream.close()
+    }
+
+    /**
+      * Save the model as to HDFS-compatible file system.
+      *
+      * @param path The model path as in Hadoop path.
+      */
+    def saveModelAsHadoopFile(path: String): Unit = {
+      implicit val sc = super.sparkSession.sparkContext
+      val internalPath = new Path(path)
+      val outputStream = internalPath.getFileSystem(sc.hadoopConfiguration).create(internalPath)
+      instance._booster.saveModel(outputStream)
+      outputStream.close()
+    }
+
+    /**
+      * Dump the model as to HDFS-compatible file system.
+      */
+    def dumpModelAsHadoopFile(dumpPath: String): Unit = {
+      implicit val sc = super.sparkSession.sparkContext
+      val internalPath = new Path(dumpPath)
+      val outputStream = internalPath.getFileSystem(sc.hadoopConfiguration).create(internalPath)
+      instance._booster.dumpModel(outputStream)
       outputStream.close()
     }
   }

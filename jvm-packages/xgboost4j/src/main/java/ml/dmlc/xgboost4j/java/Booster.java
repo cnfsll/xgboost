@@ -398,6 +398,24 @@ public class Booster implements Serializable, KryoSerializable {
   }
 
   /**
+   * Get the dump of the model for explanation and feature transform
+   */
+  public void dumpModel(OutputStream out) throws XGBoostError, IOException {
+    String[] modelInfos = getDumpInfo(false);
+    try {
+      PrintStream ps = new PrintStream(out);
+      for(int i = 0; i < modelInfos.length; ++ i) {
+        ps.print("booster[" + i + "]:\n");
+        ps.print(modelInfos[i]);
+      }
+      ps.close();
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+    out.close();
+  }
+
+  /**
    * Get the dump of the model as a string array
    *
    * @param withStats Controls whether the split statistics are output.

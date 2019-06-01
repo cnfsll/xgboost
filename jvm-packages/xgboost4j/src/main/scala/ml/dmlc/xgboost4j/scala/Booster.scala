@@ -216,6 +216,15 @@ class Booster private[xgboost4j](private[xgboost4j] var booster: JBooster)
   def saveModel(out: java.io.OutputStream): Unit = {
     booster.saveModel(out)
   }
+
+  /**
+    * Dump the model for explanation and feature transform
+    */
+  @throws(classOf[XGBoostError])
+  def dumpModel(out: java.io.OutputStream): Unit = {
+    booster.dumpModel(out)
+  }
+
   /**
    * Dump model as Array of string
    *
